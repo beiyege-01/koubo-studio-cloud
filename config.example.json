@@ -1,0 +1,32 @@
+{
+  "llm": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "api_key": ""},
+  "avatar": {
+    "base": "https://www.runninghub.ai",
+    "api_key": "",
+    "workflow_id": "",
+    "node_image": "327",
+    "node_audio": "393",
+    "instance_type": "plus",
+    "default_image": ""
+  },
+  "tts_rh": {
+    "workflow_id": "2098056520643035137",
+    "node_text": "66",
+    "node_ref_audio": "13",
+    "node_ref_text": "67",
+    "ref_audio": "",
+    "ref_text": "",
+    "instance_type": "default",
+    "fallback_ref_audio": "D:\\speech-to-speech\\voices\\wenr-liangmi\\ref_audio.wav",
+    "fallback_ref_text_file": "D:\\speech-to-speech\\voices\\wenr-liangmi\\ref_text.txt"
+  },
+  "tts": {
+    "model_path": "D:\\Models\\dots-tts\\dots.tts-soar",
+    "precision": "bfloat16",
+    "ref_audio": "",
+    "ref_text_file": "",
+    "projects_dir": "",
+    "segment": {"min": 30, "max": 40}
+  },
+  "_说明": "复制为 config.json 后填入: llm.api_key(LLM), avatar.api_key(RunningHub, 数字人+云端TTS共用), tts.model_path/ref_audio/ref_text_file(本地soar), projects_dir 可留空=软件目录\\projects"
+}

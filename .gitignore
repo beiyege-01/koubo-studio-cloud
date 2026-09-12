@@ -1,0 +1,23 @@
+# 用户私密数据(含 API Key) — 永不入库
+config.json
+projects/
+# 构建产物与大二进制(ffmpeg/node/Python 运行时走 Releases 分发)
+dist_nuitka/
+dist/
+.buildvenv/
+app_build.py
+build/
+*.spec
+node/
+*.exe
+*.pyd
+*.dll
+# 运行时/日志
+server.log
+server.err
+__pycache__/
+*.pyc
+# 临时脚本/探针
+tools/_*
+# 渲染临时件
+*.log

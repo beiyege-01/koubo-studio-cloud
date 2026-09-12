@@ -1,0 +1,10 @@
+import importlib.util
+spec = importlib.util.spec_from_file_location('app', r'E:\deepseek-works\koubo-studio\app.py')
+app = importlib.util.module_from_spec(spec); spec.loader.exec_module(app)
+tx = app._cta_texts({'palette':{'accent':'#E6C478'}})
+c,h,j = app._hf_tilt_parts(704,1280,14.0,4.0,tx,'#E6C478')
+print('split-tilt | css',len(c),'html',len(h),'js',len(j))
+print('| 两卡', h.count('tw-card'), '| 眉标', h.count('tw-pill'), '| 镜像旋转', 'rotateY(14deg)' in c and 'rotateY(-14deg)' in c)
+print('| 飞入x补间', j.count('x:-') , j.count('x:') , '| 过冲','back.out(1.9)' in j, '| 硬杀','tl.set' in j)
+print('| 菜单', list(app._HF_CMP_MENU))
+print('| normalize', app._normalize_menu({'cmp':'split-tilt'})['cmp'])

@@ -1,0 +1,18 @@
+{
+  "compositions/components/caption-blend-difference.html": "82dddc30094cfe03195485f0bf5bad686855732fdadc5a975e4da33eb6447e26",
+  "compositions/components/caption-clip-wipe.html": "8b9e06353df3ea3bc0113a9c7ef3e480293a6ed75bee46744b053bf5e02dc5f6",
+  "compositions/components/caption-editorial-emphasis.html": "6144571b6c73dbdec282284fe2277d3c958e15cddaf362295ba9cca02e705d1c",
+  "compositions/components/caption-highlight.html": "77f877ddcef85e787453daa6724cec5e85a0678fcb098fe94f9b86ce0ef5f2f4",
+  "compositions/components/caption-pill-karaoke.html": "cdbbc72af7fbac440c0bf5750cf9e3d4ded20f26588b00ac79399342ca60b3e3",
+  "compositions/components/grain-overlay.html": "97a0da8f26feca9574abcf08b8186cef10ea4819b2aeabc30547ae16ed9ae80d",
+  "compositions/components/headline-slam.html": "b16ac28b01bf7f352d6a3f267838253de85794cd9bedd8065b48d7675e9295cd",
+  "compositions/components/marker-highlight.html": "bedd128ffab3808b4624f9aa5bcd0e80c9022726fdad59191301259adb0512dc",
+  "compositions/components/per-word-rise.html": "e093265396dba184e2b451eb8154d7bbf3d80a49edd33d3a84d6676702a190f7",
+  "compositions/components/titlecard-lockup.html": "6a5e54b3819357bd264337cf16240b6a4e65e1059c08ccd82554611a60cdb072",
+  "compositions/components/tracking-in.html": "23d477361fd4b3bbe8111cb9616e5936f1c420a4762adf4855b9741425c0b091",
+  "compositions/components/typewriter.html": "98b1a2780a8ce480309af4ff9773b50742a2ce6fc05f0f7307aa3f5434436379",
+  "compositions/components/vignette.html": "b825476ca7bb89c0afbd6f1157b9813ac6a1ac82e9aa13a7cecd7ae305ebb2d5",
+  "compositions/lt-color-block.html": "6afd585093d76670eff225341af0db0a487da993f8bc4d8f905684b3c742388b",
+  "compositions/lt-kicker-name.html": "ca0737e073c880c076089d5388897432981a7b8ba4d6d6a23cee630caae63e81",
+  "compositions/lt-side-rule.html": "894730486b65f1b22c8a93c4c50836be81d60b7dc21c3aa36136f6fc2c54a42c"
+}
