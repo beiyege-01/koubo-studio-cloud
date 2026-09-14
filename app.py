@@ -4571,9 +4571,12 @@ button.done{background:linear-gradient(180deg,#2e9e5b,#1f7a44)!important;color:#
 .engbtn.on .et{color:var(--gold2)}
 /* 逐段完成反馈: 段卡绿脉冲一次 + 按钮短促绿闪 */
 .segcard.flash-ok,.avseg.flash-ok{border-color:#2e9e5b;box-shadow:0 0 16px rgba(46,158,91,.4);transition:box-shadow .3s}
-/* 段卡合成成功的常驻淡绿(区分已合成/待合成; fresh 金光优先, 试听后回落到淡绿) */
-.segcard.tts-done{border-color:rgba(46,158,91,.32);background:rgba(46,158,91,.045)}
-.segcard.tts-done.fresh{border-color:var(--golddim);background:none}
+/* 资产条状态淡绿(克制, 按资产各自状态, 不染整卡): fresh 金光优先, 试听后回落淡绿 */
+.segcard .asset.audio.tts-done{border-left-color:#2e9e5b;background:rgba(46,158,91,.05)}
+.segcard .asset.audio.tts-done .alabel{color:#7fcf9f}
+.segcard .asset.video.vid-done{border-left-color:#2e9e5b;background:rgba(46,158,91,.05)}
+.segcard .asset.video.vid-done .alabel{color:#7fcf9f}
+.segcard .asset.video.running.vid-done{border-left-color:#7ea6d8;box-shadow:none;background:none}
 button.tick{animation:doneFlash .45s ease 1}
 /* 数字人提交状态行: 提交中(金)/已提交(绿)/失败(红) — 独占一行常驻可见 */
 .vinfo{font-size:12px;flex-basis:100%}
@@ -5764,7 +5767,7 @@ function renderSegs(segs){
   (segs||[]).forEach(s=>{
     if(s.status==='kept')kept++;else if(s.status==='deleted')deleted++;else pending++;
     /* ---- 段卡片: 文本 + 声音资产条 + 数字人资产条, 同一份子项收在一张卡 ---- */
-    const c=document.createElement('div');c.className='segcard'+(s.status==='deleted'?' deleted':'')+((s.status==='kept'&&s.wav&&s.audio_ok)?' tts-done':'');
+    const c=document.createElement('div');c.className='segcard'+(s.status==='deleted'?' deleted':'');
     c.dataset.id=s.id;
     c.ondragover=allowDrop;c.ondragleave=unDrop;c.ondrop=e=>dropBind(e,s.id);
     const hasAudio=s.status!=='deleted'&&s.wav&&s.audio_ok;
@@ -5773,7 +5776,7 @@ function renderSegs(segs){
     c.innerHTML=`<div class="shead"><span class="id">${s.id}</span>${stTag}<span class="len">${s.text.length}字</span></div>
       <div class="stext">${s.text.replace(/</g,'&lt;')}</div>`;
     /* 🎤 声音资产条 */
-    const a=document.createElement('div');a.className='asset audio';
+    const a=document.createElement('div');a.className='asset audio'+((s.status==='kept'&&s.wav&&s.audio_ok)?' tts-done':'');   /* TTS已合成: 声音条淡绿 */
     a.innerHTML='<span class="alabel">🎤 声音</span>';
     if(hasAudio){
       const au=document.createElement('audio');au.controls=true;au.preload='none';
@@ -5855,7 +5858,7 @@ function renderSegs(segs){
     if(s.status!=='deleted'){
       const vs=s.video_status||'';
       const hasVideo=s.video&&vs!=='deleted';
-      const r=document.createElement('div');r.className='asset video'+(vs==='running'?' running':'');
+      const r=document.createElement('div');r.className='asset video'+(vs==='running'?' running':'')+(hasVideo?' vid-done':'');   /* 视频已生成: 视频条淡绿 */
       r.innerHTML='<span class="alabel">🎬 数字人视频</span>';
       if(s.img){
         r.appendChild(avThumb(s.img,26,false));
