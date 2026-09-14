@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""口播生成器 · 云端版 (RunningHub TTS + 数字人 + HyperFrames 精剪)
+r"""口播辅助创作台 · 云端版 (RunningHub TTS + 数字人 + HyperFrames 精剪)
 运行(源码): uvicorn app:app --host 127.0.0.1 --port 8795
 运行(exe):  双击 koubo-studio-cloud.exe (自动选端口并打开浏览器)
 """
@@ -35,7 +35,7 @@ _DEFAULT_CONF = {
     "avatar": {"base": "https://www.runninghub.ai", "api_key": "",
                # 默认指向作者公开的数字人应用; 用户可在 config.json 换自己的应用 ID
                "workflow_id": "2097438782312632322",
-               "node_image": "327", "node_audio": "393", "instance_type": "plus", "default_image": ""},
+               "node_image": "327", "node_audio": "393", "instance_type": "plus", "default_image": "", "max_parallel": 1},   # 并行上限(1=串行排队, API 不支持多线时也安全)
     "tts_rh": {"workflow_id": "2098056520643035137", "node_text": "66", "node_ref_audio": "13",
                "node_ref_text": "67", "ref_audio": "", "ref_text": "", "instance_type": "default",
                "fallback_ref_audio": "", "fallback_ref_text_file": ""},
@@ -70,7 +70,7 @@ def _projects_dir() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-app = FastAPI(title="口播生成器", docs_url=None, redoc_url=None)
+app = FastAPI(title="口播辅助创作台", docs_url=None, redoc_url=None)
 
 # ---------------- LLM (用户在设置面板配置) ----------------
 _llm_lock = threading.Lock()
@@ -683,7 +683,8 @@ def api_settings():
             "avatar_image": av.get("default_image", ""),
             "avatar_instance": av.get("instance_type", "plus"),
             "avatar_has_key": bool(akey),
-            "avatar_key_hint": ("••••" + akey[-4:] if len(akey) > 8 else "")}
+            "avatar_key_hint": ("••••" + akey[-4:] if len(akey) > 8 else ""),
+            "max_parallel": _avatar_cap()}
 
 @app.post("/api/settings")
 def api_settings_save(body: dict):
@@ -711,6 +712,11 @@ def api_settings_save(body: dict):
     ak = (body.get("avatar_key") or "").strip()
     if ak:
         av["api_key"] = ak
+    if "max_parallel" in body:
+        try:
+            av["max_parallel"] = max(1, min(4, int(body.get("max_parallel") or 1)))
+        except Exception:
+            pass
     _save_conf()
     return api_settings()
 
@@ -721,6 +727,12 @@ def api_settings_test():
         return {"ok": True, "reply": out[:50]}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
+
+@app.get("/api/gate/status")
+def api_gate_status():
+    """流程门禁彩蛋数据: LLM Key / RunningHub Key 是否已配置(项目状态由前端本地判断)。"""
+    return {"llm_key": bool((CONF.get("llm", {}).get("api_key") or "").strip()),
+            "rh_key": bool((CONF.get("avatar", {}).get("api_key") or "").strip())}
 
 # ---------------- API: 技能 ----------------
 @app.get("/api/skills/{stage}")
@@ -1491,6 +1503,98 @@ def _find_item(d: Path, item_id: str):
         return hit, (lambda: _save_custom(d, items))
     return None, None
 
+def _avatar_cap() -> int:
+    """数字人视频并行上限(1-4, 默认 1 = 串行排队)。"""
+    try:
+        v = int(CONF.get("avatar", {}).get("max_parallel") or 1)
+    except Exception:
+        v = 1
+    return max(1, min(4, v))
+
+def _iter_all_items(d: Path):
+    """遍历 TTS 段与自制音频全部条目, 返回 [(item, save回调)]"""
+    out = []
+    seg = _load_segments(d)
+    for s in seg["segments"]:
+        out.append((s, lambda: _save_segments(d, seg)))
+    cus = _load_custom(d)
+    for c in cus:
+        out.append((c, lambda: _save_custom(d, cus)))
+    return out
+
+def _avatar_running(d: Path, exclude: str = "") -> int:
+    n = 0
+    for it, _sv in _iter_all_items(d):
+        if it.get("id") != exclude and it.get("video_status") == "running":
+            n += 1
+    return n
+
+def _avatar_submit(d: Path, hit: dict, save, image: str = "") -> dict:
+    """提交单段数字人任务到 RunningHub(上传形象图/音频 → 建任务 → 落库 running)。"""
+    # 形象图优先级: 条目绑定 > 请求指定 > 项目默认(config) > 内置兜底
+    img = _clean_path((hit.get("img") or "").strip() or (image or "").strip()
+        or CONF.get("avatar", {}).get("default_image", "").strip())
+    if (not img or not Path(img).exists()) and Path(DEFAULT_AVATAR_IMAGE).exists():
+        img = DEFAULT_AVATAR_IMAGE
+    wav = _item_file(d, hit)
+    if not wav.exists():
+        raise HTTPException(400, "该段音频尚未合成或不存在")
+    if not img or not Path(img).exists():
+        raise HTTPException(400, "形象图不存在: " + (img or "(未设置, 请先添加图片或设默认形象图)"))
+    img_fn = _rh_upload(img)
+    aud_fn = _rh_upload(str(wav))
+    tid = _rh_create(img_fn, aud_fn)
+    hit["video_task"] = tid
+    hit["video_status"] = "running"
+    hit["video_error"] = ""
+    save()
+    return {"seg": hit}
+
+def _avatar_pick_queued(d: Path):
+    for it, save_cb in _iter_all_items(d):
+        if it.get("video_status") == "queued":
+            return it, save_cb
+    return None, None
+
+_promote_lock = threading.Lock()
+
+def _avatar_promote_async(d: Path):
+    threading.Thread(target=_avatar_promote_worker, args=(d,), daemon=True).start()
+
+def _avatar_promote_worker(d: Path):
+    """后台并发补位: queued 段按顺序自动续交。
+    实测(2026-09-14) RunningHub 同账户不允许并行(第二个提交返回 421 'API 并发数已达上线'),
+    且前任务刚完成时平台额度释放有延迟 → 补位提交撞 421 须等待重试, 而非误标失败。"""
+    if not _promote_lock.acquire(blocking=False):
+        return                      # 已有补位线程在跑
+    try:
+        while _avatar_running(d) < _avatar_cap():
+            hit, save_cb = _avatar_pick_queued(d)
+            if not hit:
+                return
+            for _attempt in range(6):            # 单段最多重试 6 次(约 2 分钟)
+                try:
+                    _avatar_submit(d, hit, save_cb, "")
+                    break                        # 提交成功 → 回 while 取下一段
+                except HTTPException as e:
+                    msg = str(getattr(e, "detail", None) or e)
+                    if getattr(e, "status_code", 0) == 421 or "queue limit" in msg or "并发数已达" in msg:
+                        time.sleep(20)           # 平台并发额度未释放, 稍后重试(保留 queued)
+                        continue
+                    hit["video_status"] = "none"
+                    hit["video_error"] = ("排队提交失败: " + msg)[:200]
+                    save_cb()
+                    break                        # 永久性错误 → 标失败, 取下一段
+                except Exception as e:
+                    hit["video_status"] = "none"
+                    hit["video_error"] = ("排队提交失败: " + f"{type(e).__name__}: {e}")[:200]
+                    save_cb()
+                    break
+            else:
+                return                           # 重试耗尽 → 保留 queued, 下次轮询再触发
+    finally:
+        _promote_lock.release()
+
 @app.post("/api/avatar/synth")
 def api_avatar_synth(body: dict):
     d = _find_project(body.get("project") or "")
@@ -1498,31 +1602,20 @@ def api_avatar_synth(body: dict):
     hit, save = _find_item(d, seg_id)
     if not hit:
         raise HTTPException(404, "找不到分段 " + seg_id)
-    # 形象图优先级: 条目绑定 > 请求指定 > 项目默认(config) > 内置兜底
-    image = _clean_path((hit.get("img") or "").strip() or (body.get("image") or "").strip()
-        or CONF.get("avatar", {}).get("default_image", "").strip())
-    if (not image or not Path(image).exists()) and Path(DEFAULT_AVATAR_IMAGE).exists():
-        image = DEFAULT_AVATAR_IMAGE
-    wav = _item_file(d, hit)
-    if not wav.exists():
-        raise HTTPException(400, "该段音频尚未合成或不存在")
-    if not image or not Path(image).exists():
-        raise HTTPException(400, "形象图不存在: " + (image or "(未设置, 请先添加图片或设默认形象图)"))
-    img_fn = _rh_upload(image)
-    aud_fn = _rh_upload(str(wav))
+    # 并发闸: 运行数已达上限 → 本段排队落库, 前序完成后由 _avatar_promote 自动续交
+    if _avatar_running(d, exclude=seg_id) >= _avatar_cap():
+        hit["video_status"] = "queued"
+        hit["video_error"] = ""
+        save()
+        return {"seg": hit, "queued": True}
     try:
-        tid = _rh_create(img_fn, aud_fn)
+        return _avatar_submit(d, hit, save, (body.get("image") or "").strip())
     except Exception as e:
         # 提交失败(上传/网络/参数)同样落库, 卡片常驻显示原因(不再只靠瞬时提示)
         hit["video_status"] = "none"
         hit["video_error"] = str(getattr(e, "detail", None) or f"{type(e).__name__}: {e}")[:200]
         save()
         raise
-    hit["video_task"] = tid
-    hit["video_status"] = "running"
-    hit["video_error"] = ""
-    save()
-    return {"seg": hit}
 
 @app.post("/api/avatar/status")
 def api_avatar_status(body: dict):
@@ -1574,6 +1667,8 @@ def api_avatar_status(body: dict):
         hit["video_status"] = "none"
         hit["video_error"] = err or "任务失败"
     save()
+    if hit.get("video_status") in ("kept", "none"):
+        _avatar_promote_async(d)    # 本段终态 → 后台补位(queued 段自动续交, 421 等待重试)
     return {"seg": hit}
 
 @app.get("/media/{name}/{path:path}")
@@ -4367,7 +4462,7 @@ def index():
 
 HTML = r"""<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
-<title>口播生成器 Studio</title>
+<title>口播辅助创作台</title>
 <style>
 :root{--bg:#0a0a0d;--bg2:#0d0d11;--card:#121217;--card2:#16161b;--line:#232329;--line2:#303039;
   --tx:#eae6dc;--dim:#8d897c;--gold:#b6a884;--gold2:#cdc2a6;--golddim:#8a8069;--goldbg:rgba(182,168,132,.08)}
@@ -4449,6 +4544,24 @@ button.done{background:linear-gradient(180deg,#2e9e5b,#1f7a44)!important;color:#
 #live2dcanvas.cat-rb{right:2%!important;left:auto!important;bottom:0!important;top:auto!important}
 #live2dcanvas.cat-lt{left:2%!important;right:auto!important;top:16%!important;bottom:auto!important}
 #live2dcanvas.cat-rt{right:2%!important;left:auto!important;top:16%!important;bottom:auto!important}
+/* 项目门禁: 未建/未选项目时, 项目卡金框呼吸提醒 */
+.card.need-attention{border-color:var(--gold);animation:needPulse 1.8s ease-in-out infinite}
+@keyframes needPulse{0%,100%{box-shadow:0 0 0 0 rgba(182,168,132,0)}50%{box-shadow:0 0 20px 3px rgba(182,168,132,.35)}}
+/* 猫气泡彩蛋: 流程未就绪时黑猫头上依次冒气泡(位置类与猫联动) */
+#catBubble{position:fixed;z-index:7;max-width:270px;padding:10px 14px;background:#14141a;
+  border:1px solid var(--gold);border-radius:12px;color:var(--gold2);font-size:13px;line-height:1.55;
+  box-shadow:0 6px 24px rgba(0,0,0,.5);opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .35s,transform .35s;transform:translateY(8px)}
+#catBubble.cat-show{opacity:1;visibility:visible;transform:translateY(0)}
+#catBubble::after{content:'';position:absolute;bottom:-9px;left:32px;border:9px solid transparent;
+  border-top-color:var(--gold);border-bottom:none;border-left-width:6px;border-right-width:6px}
+#catBubble.cat-lb{left:calc(2% + 168px);bottom:170px}
+#catBubble.cat-rb{right:calc(2% + 168px);bottom:170px}
+#catBubble.cat-rb::after{left:auto;right:32px}
+#catBubble.cat-lt{left:calc(2% + 168px);top:calc(16% + 6px)}
+#catBubble.cat-rt{right:calc(2% + 168px);top:calc(16% + 6px)}
+#catBubble.cat-rt::after{left:auto;right:32px}
+.avseg.queued{border-style:dashed;border-color:var(--golddim)}
 /* 引擎左右切换: 柔和描边选中(不用实底金), 紧凑尺寸 */
 .engbtn{flex:1;text-align:center;padding:5px 8px;border-radius:8px;background:#14141a;border:1px solid var(--line)}
 .engbtn:hover{border-color:var(--golddim)}
@@ -4645,7 +4758,7 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
 <div style="display:none"><textarea id="m1"></textarea><textarea id="m2"></textarea><textarea id="script"></textarea></div>
 
 <div class="masthead">
-  <div><h1>口播生成器<i>STUDIO</i></h1>
+  <div><h1>口播辅助创作台<i>STUDIO</i></h1>
   <div class="sub">项目存于 <b id="projPath">…</b> · 流程：灵感 → 选题 → 成稿 → 合成 → 数字人</div></div>
   <div><button id="btnSettings" onclick="openSettings()">⚙ 设置</button></div>
 </div>
@@ -4654,6 +4767,19 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
   <a onclick="goto('card4')">④ 分段合成</a><a onclick="goto('cardAV')">🎬 数字人工作台</a>
   <a onclick="goto('card5')">🎞️ 自动剪辑</a>
 </div>
+
+<div class="card" id="cardProj">
+  <h3><span class="n">◈</span>创作第一步 · 项目
+    <span class="tail"><button class="sm" onclick="openFolder('projects')" title="在资源管理器打开项目根目录">📂</button></span></h3>
+  <div class="row">
+    <button class="primary" onclick="newProject()">＋ 新建项目</button>
+    <select id="projList" onchange="loadProject(this.value)" style="width:auto;min-width:300px"><option value="">— 打开已有项目 —</option></select>
+    <button class="sm" onclick="deleteProject()" title="删除下拉中选中的历史项目（含全部文案/音频/成片，不可恢复）">🗑 删除项目</button>
+    <span class="muted" id="projInfo"></span>
+  </div>
+  <div id="projGateTip" style="display:none;margin-top:10px;font-size:13px;color:var(--gold2)">👉 所有素材（文案 / 音频 / 视频）都归档在项目里 — 先<b>新建</b>或<b>选择</b>一个项目，再开始创作</div>
+</div>
+
 
 <div class="card av" id="cardAV">
   <h3><span class="n">✦</span>数字人工作台 <span class="star">重点功能</span>
@@ -4721,17 +4847,6 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
   </div>
   <div class="muted" style="margin-top:8px" id="avTip">💡 小贴士：AI 生成偶有惊喜——若视频出现怪异字幕、口型不自然或画面瑕疵，点「重生成视频」再试一次通常即可 <span style="opacity:.75">If a video comes out with odd subtitles or visual artifacts, simply regenerate it.</span></div>
   <div class="scrollbox" style="margin-top:8px"><div class="avgrid" id="avSegs" style="margin-top:0"></div></div>
-</div>
-
-<div class="card" id="cardProj">
-  <h3><span class="n">◈</span>项目
-    <span class="tail"><button class="sm" onclick="openFolder('projects')" title="在资源管理器打开项目根目录">📂</button></span></h3>
-  <div class="row">
-    <button class="primary" onclick="newProject()">＋ 新建项目</button>
-    <select id="projList" onchange="loadProject(this.value)" style="width:auto;min-width:300px"><option value="">— 打开已有项目 —</option></select>
-    <button class="sm" onclick="deleteProject()" title="删除下拉中选中的历史项目（含全部文案/音频/成片，不可恢复）">🗑 删除项目</button>
-    <span class="muted" id="projInfo"></span>
-  </div>
 </div>
 
 <div class="card" id="card1">
@@ -5089,6 +5204,13 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
     <input type="password" id="setAvatarKey" autocomplete="off"> <div class="muted" id="avatarKeyHint"></div></div>
   <div style="margin-bottom:10px"><div class="muted">数字人形象图默认路径（RunningHub plus 48G 实例）</div>
     <input type="text" id="setAvatarImage" placeholder="D:\素材图\数字人.jpg"></div>
+  <div style="margin-bottom:10px"><div class="muted">数字人视频并行数（同时提交给 RunningHub 的任务数；API 不支持多线时，超出部分自动排队，前序完成自动续交）</div>
+    <select id="setMaxParallel" style="width:100%">
+      <option value="1">1 — 串行排队（最稳，默认）</option>
+      <option value="2">2 — 双线并行</option>
+      <option value="3">3 — 三线并行</option>
+      <option value="4">4 — 四线并行</option>
+    </select></div>
   <div class="row">
     <button class="primary" onclick="saveSettings()">保存</button>
     <button onclick="testLLM()">测试连通</button>
@@ -5098,7 +5220,7 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
 </div></div>
 
   <div class="site-foot">
-    <div>© <span id="yearNow"></span> 天工开帧 · 口播生成器 · 由兴趣驱动，为动手而做</div>
+    <div>© <span id="yearNow"></span> 天工开帧 · 口播辅助创作台 · 由兴趣驱动，为动手而做</div>
     <div class="sf-links">
       <a href="https://v.douyin.com/BgCJXnllitM/" target="_blank" rel="noopener noreferrer" aria-label="抖音" title="抖音">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/></svg>
@@ -5120,6 +5242,7 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
 <div id="toast"></div>
 </div>
 <div id="catHot" title="点我看看作者是谁"></div>
+<div id="catBubble" aria-live="polite"></div>
 <div class="modal" id="aboutModal"><div class="box">
   <h2>你好呀，我是天工开帧 🐈</h2>
   <p class="am-sub">一个兴趣使然的 AI 动画师，<br>一个不入流的 AI 时代探索者。</p>
@@ -5130,7 +5253,7 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
     <b style="color:#d8d2c4">技术不是为了炫技，而是为了让想象落地。</b>
     这里不追热点、不贩卖焦虑，只有能照着做的流程，和一点关于动手的朴素快乐。</p>
   <div class="am-sec">这个程序能做什么</div>
-  <p class="am-p">「口播生成器 · 云端版」把一条口播视频拆成五步，串成一条流水线：</p>
+  <p class="am-p">「口播辅助创作台 · 云端版」把一条口播视频拆成五步，串成一条流水线（每一步都由你审核决定，AI 只是助手）：</p>
   <div>
     <span class="am-tag">① 选题</span><span class="am-tag">② 深度调研（联网取证）</span>
     <span class="am-tag">③ 统一成稿</span><span class="am-tag">④ 分段合成 TTS</span>
@@ -5285,6 +5408,7 @@ async function importScript(){
 }
 /* ---- ① 灵感收集 ---- */
 async function runCollect(){
+  if(!gateCheckSync())return;
   const skills=sel('collect','collectChips');
   if(!skills.length){toast('至少勾选一个技能');return}
   $('btnCollect').disabled=true;
@@ -5299,7 +5423,7 @@ async function runCollect(){
 }
 let m1ok=false,m2ok=false;
 function setM1ok(v){m1ok=v;const b=$('btnM1ok');
-  b.textContent=v?'✓ 已确认，可进行下一步':'审核确认中';
+  b.textContent=v?'✓ 资料我已审核，传递给下一个环节使用。':'审核确认中';
   b.classList.toggle('confirm-done',v);b.classList.toggle('confirm-pending',!v);
   updRHint()}
 function confirmM1(){setM1ok(true);autoSave();toast('灵感资料已确认');
@@ -5313,6 +5437,7 @@ function updRHint(){
 function syncTopicGate(){ $('btnResearch').disabled=!$('topic').value.trim(); updRHint() }
 $('topic').addEventListener('input',syncTopicGate);
 async function runResearch(){
+  if(!gateCheckSync())return;
   const topic=$('topic').value.trim();
   if(!topic){toast('先输入选题');return}
   const skills=sel('research','researchChips');
@@ -5330,12 +5455,13 @@ async function runResearch(){
   $('card2').classList.remove('stage-running');
 }
 function setM2ok(v){m2ok=v;const b=$('btnM2ok');
-  b.textContent=v?'✓ 已确认，可进行下一步':'审核确认中';
+  b.textContent=v?'✓ 资料我已审核，传递给下一个环节使用。':'审核确认中';
   b.classList.toggle('confirm-done',v);b.classList.toggle('confirm-pending',!v)}
 function confirmM2(){setM2ok(true);autoSave();toast('调研资料已确认');
   $('card3').scrollIntoView({behavior:'smooth'})}
 /* ---- ③ 统一成稿 ---- */
 async function runUnify(){
+  if(!gateCheckSync())return;
   const topic=$('topic').value.trim();
   if(!topic){toast('先输入选题');return}
   const skill=$('unifySel').value;
@@ -5381,7 +5507,7 @@ async function createProject(){
     $('editPreview').style.display='none';
     renderSegs([]);
     loadVoiceRef();
-    toast('项目已创建: '+projName);
+    toast('项目已创建: '+projName);syncProjGate();
   }catch(e){toast('创建失败: '+e.message,5000)}
 }
 async function refreshProjects(){
@@ -5399,7 +5525,7 @@ async function deleteProject(){
     await api('/api/project/delete',{project:name});
     toast('已删除 '+name);
     if(name===projName){location.reload();return}
-    await refreshProjects();
+    await refreshProjects();syncProjGate();
   }catch(e){toast('删除失败: '+e.message,6000)}
 }
 /* ---- 自定义设计模板: 风格+提示词+全家族菜单快照 ---- */
@@ -5457,7 +5583,7 @@ async function loadProject(name){
   renderSegs(j.segments||[]);
   loadVoiceRef();
   loadEditItems();
-  toast('已载入 '+name);
+  toast('已载入 '+name);syncProjGate();
 }
 /* ---- ④ 分段合成 ---- */
 /* TTS 引擎左右切换: 左=云端 RH, 右=本地 soar; 两边音色配置各自独立 */
@@ -5539,7 +5665,7 @@ function tickBtn(){
   const b=$('btnSplit');b.classList.add('tick');setTimeout(()=>b.classList.remove('tick'),500);
 }
 async function splitSynth(resynth){
-  if(!projName){toast('先新建或打开项目');return}
+  if(!gateCheckSync())return;
   const eng = ttsEng;   /* 左右切换当前选中的引擎, 无自动魔法 */
   synthBusy(true);
   try{
@@ -5799,12 +5925,12 @@ function renderAvatarPanel(segs){
   ];
   if(!cards.length){grid.innerHTML='<span class="muted">暂无可用音频 — 完成④分段合成，或在上方「自制音频」直接上传</span>';return}
   cards.forEach(s=>{
-    const c=document.createElement('div');c.className='avseg'+(s.video_status==='running'?' running':'');
+    const c=document.createElement('div');c.className='avseg'+(s.video_status==='running'?' running':'')+(s.video_status==='queued'?' queued':'');
     c.dataset.id=s.id;
     c.ondragover=allowDrop;c.ondragleave=unDrop;c.ondrop=e=>dropBind(e,s.id);
     const top=document.createElement('div');top.className='row';top.style.justifyContent='space-between';
     const tag=s._kind==='cus'?('<span class="badge gold">'+(s.text?'文本生成':'自制音频')+'</span>'):'';
-    top.innerHTML=`<span class="id">${s.id}</span>${tag}<span class="muted">${s.video_status==='running'?'<span class="spin"></span>生成中 · 预计 300 秒左右':(s.video?'✓ 视频':'待生成')}</span>`;
+    top.innerHTML=`<span class="id">${s.id}</span>${tag}<span class="muted">${s.video_status==='running'?'<span class="spin"></span>生成中 · 预计 300 秒左右':(s.video_status==='queued'?'⏳ 排队中 · 前序完成后自动提交':(s.video?'✓ 视频':'待生成'))}</span>`;
     c.appendChild(top);
     if(s.video_error&&s.video_status!=='running'&&!s.video){   /* 上次失败原因常驻可见 */
       const ev=document.createElement('div');ev.className='vinfo err';
@@ -6388,7 +6514,7 @@ async function avatarSynth(segId){
   }
 }
 async function avatarAll(){
-  if(!projName){toast('先新建或打开项目');return}
+  if(!gateCheckSync())return;
   let n=0;
   for(const segId of avKeptIds()){
     if(runningSegs.includes(segId))continue;
@@ -6411,7 +6537,8 @@ function pollVideos(){
     for(const segId of [...runningSegs]){
       try{
         const j=await api('/api/avatar/status',{project:projName,seg:segId,action:'poll'});
-        if(j.seg.video_status!=='running'){
+        const vst=j.seg.video_status;
+        if(vst!=='running'&&vst!=='queued'){   /* queued 段留在轮询里等后端补位转 running */
           runningSegs=runningSegs.filter(x=>x!==segId);
           if(j.seg.video_status==='kept'&&j.seg.video){
             toast(segId+' 数字人视频已生成 ✓');
@@ -6433,7 +6560,7 @@ function openSettings(){
     $('setBase').value=j.base_url;$('setModel').value=j.model;if($('setThinking'))$('setThinking').value=j.thinking||'off';$('setDir').value=j.projects_dir_custom?j.projects_dir:'';
     $('setDir').placeholder='留空 = '+j.projects_dir;
     $('keyHint').textContent=j.has_key?('当前已配置 ('+j.key_hint+')'):'尚未配置';
-    $('setAvatarImage').value=j.avatar_image||'';
+    $('setAvatarImage').value=j.avatar_image||'';if($('setMaxParallel'))$('setMaxParallel').value=String(j.max_parallel||1);
     $('avatarKeyHint').textContent=j.avatar_has_key?('当前已配置 ('+j.avatar_key_hint+') · 实例: '+j.avatar_instance):'尚未配置';
     $('settingsModal').style.display='flex';
   });
@@ -6441,8 +6568,9 @@ function openSettings(){
 function closeSettings(){$('settingsModal').style.display='none'}
 async function saveSettings(){
   await api('/api/settings',{base_url:$('setBase').value,model:$('setModel').value,api_key:$('setKey').value,
-    projects_dir:$('setDir').value,avatar_image:cleanPath($('setAvatarImage').value),avatar_key:$('setAvatarKey').value});
-  $('setKey').value='';$('setAvatarKey').value='';openSettings();loadSub();refreshAvatarKeyStatus();toast('设置已保存');
+    projects_dir:$('setDir').value,avatar_image:cleanPath($('setAvatarImage').value),avatar_key:$('setAvatarKey').value,
+    max_parallel:parseInt(($('setMaxParallel')||{}).value||'1',10)});
+  $('setKey').value='';$('setAvatarKey').value='';openSettings();loadSub();refreshAvatarKeyStatus();refreshGate();toast('设置已保存');
 }
 async function testLLM(){
   $('setMsg').innerHTML='<span class="spin"></span>保存并测试中…';
@@ -6501,6 +6629,54 @@ function setCat(on,cardId,retry){
     if(on)hot.classList.add(CAT_SPOTS[cardId]||'cat-rb','cat-show');
   }
 }
+/* ---- 🐈 流程门禁彩蛋: 缺项目 / 未填 LLM Key / 未填 RH Key 时, 黑猫出现并依次冒气泡提醒 ---- */
+let gateLLM=true,gateRH=true,catTalking=false;
+function gateMissing(){
+  const m=[];
+  if(!projName)m.push('请先创建或选择已有项目哦。');
+  if(!gateLLM)m.push('请在设置里填入大语言模型的API。');
+  if(!gateRH)m.push('请前往RunningHub AI注册账号并填入你的API。');
+  return m;
+}
+function gateCheckSync(){       /* 同步检查: 缺失时猫弹气泡并拦截, 返回是否放行 */
+  const m=gateMissing();
+  if(m.length)catShowBubble(m);
+  return !m.length;
+}
+function catShowBubble(lines){
+  if(catTalking||!lines.length)return;
+  const b=$('catBubble');
+  if(!b)return;
+  catTalking=true;
+  setCat(true,'card1');         /* 猫出现, 落点与①一致 */
+  const b2=$('catBubble');
+  ['cat-rb','cat-lb','cat-lt','cat-rt'].forEach(k=>b2.classList.remove(k));
+  b2.classList.add(CAT_SPOTS.card1||'cat-rb');   /* 气泡位置类与猫联动 */
+  let i=0;
+  const step=()=>{
+    if(i>=lines.length){
+      setTimeout(()=>{b2.classList.remove('cat-show');catTalking=false},2600);
+      return;
+    }
+    b2.textContent=lines[i++];
+    b2.classList.add('cat-show');
+    setTimeout(step,3800);      /* 每条 3.8s, 依次出现 */
+  };
+  step();
+}
+async function refreshGate(){   /* 拉取 Key 配置状态 + 同步项目门禁特效 */
+  try{
+    const j=await api('/api/gate/status');
+    gateLLM=!!j.llm_key;gateRH=!!j.rh_key;
+  }catch(e){}
+  syncProjGate();
+}
+function syncProjGate(){        /* 项目门禁: 未建/未选项目时项目卡金框呼吸 + 提示条 */
+  const need=!projName;
+  const cp=$('cardProj');
+  if(cp){cp.classList.toggle('need-attention',need);
+    const tip=$('projGateTip');if(tip)tip.style.display=need?'':'none';}
+}
 /* 🐈 点猫 → 关于弹窗(个人介绍 + 项目简介) */
 function openAbout(){const m=$('aboutModal');if(m)m.style.display='flex'}
 function closeAbout(){const m=$('aboutModal');if(m)m.style.display='none'}
@@ -6550,8 +6726,9 @@ async function refreshStageRunning(){
   setCat(!!active,active||'card4');
 }
 setInterval(refreshStageRunning,6000);
-loadSub();refreshSkills();refreshProjects();refreshAvatarKeyStatus();refreshTpls();refreshRhTts();refreshTtsCap();setTtsEng(ttsEng);refreshStageRunning();
+loadSub();refreshSkills();refreshProjects();refreshAvatarKeyStatus();refreshTpls();refreshRhTts();refreshTtsCap();setTtsEng(ttsEng);refreshGate();refreshStageRunning();
 setTimeout(syncTopicGate, 200);
+setTimeout(()=>{const m=gateMissing();if(m.length)catShowBubble(m)},2600);   /* 首次进入: 流程未就绪则猫气泡引导 */
 </script></body></html>"""
 
 # 发行默认 TTS 引擎(单点差异): 云端版='rh' 开箱即云端合成; 本地源码版把本行改为 "local" 开箱即本地 dots.soar。
@@ -6662,7 +6839,7 @@ def main():
     port = _pick_port(int(os.environ.get("KOUBO_PORT") or 0) or 8795)
     url = f"http://127.0.0.1:{port}/"
     print("=" * 58)
-    print("  口播生成器 · 云端版")
+    print("  口播辅助创作台 · 云端版")
     print(f"  控制台地址: {url}")
     _ff = shutil.which("ffmpeg")
     print("  ffmpeg: " + ("已就绪 " + _ff if _ff else "⚠ 未检测到 — 混音/转码/剪辑会失败"))
