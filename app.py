@@ -64,7 +64,7 @@ def _save_conf():
     CONF_PATH.write_text(json.dumps(CONF, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _projects_dir() -> Path:
-    """项目根目录: 配置优先; 空 = 软件目录\projects (exe = 安装目录)。"""
+    r"""项目根目录: 配置优先; 空 = 软件目录\projects (exe = 安装目录)。"""
     v = (CONF.get("projects_dir") or "").strip()
     p = Path(v) if v else ROOT / "projects"
     p.mkdir(parents=True, exist_ok=True)
@@ -6553,6 +6553,13 @@ setInterval(refreshStageRunning,6000);
 loadSub();refreshSkills();refreshProjects();refreshAvatarKeyStatus();refreshTpls();refreshRhTts();refreshTtsCap();setTtsEng(ttsEng);refreshStageRunning();
 setTimeout(syncTopicGate, 200);
 </script></body></html>"""
+
+# 发行默认 TTS 引擎(单点差异): 云端版='rh' 开箱即云端合成; 本地源码版把本行改为 "local" 开箱即本地 dots.soar。
+# 只影响首次打开(localStorage 无 koub.ttsEng 记录)的新用户; 用户手动切换引擎后以浏览器 localStorage 为准。
+DEFAULT_TTS_ENG = "rh"
+if DEFAULT_TTS_ENG != "local":
+    HTML = HTML.replace("localStorage.getItem('koub.ttsEng') || 'local'",
+                        "localStorage.getItem('koub.ttsEng') || '" + DEFAULT_TTS_ENG + "'")
 
 
 # ---------------- 启动器: exe 双击即用 ----------------
