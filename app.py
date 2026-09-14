@@ -4561,7 +4561,7 @@ button.done{background:linear-gradient(180deg,#2e9e5b,#1f7a44)!important;color:#
 #catBubble.cat-lt{left:calc(2% + 168px);top:calc(16% + 6px)}
 #catBubble.cat-rt{right:calc(2% + 168px);top:calc(16% + 6px)}
 #catBubble.cat-rt::after{left:auto;right:32px}
-.avseg.queued{border-style:dashed;border-color:var(--golddim)}
+.avseg.queued{border-style:dashed;border-color:#5a7ea6;background:rgba(90,126,166,.05)}
 /* 引擎左右切换: 柔和描边选中(不用实底金), 紧凑尺寸 */
 .engbtn{flex:1;text-align:center;padding:5px 8px;border-radius:8px;background:#14141a;border:1px solid var(--line)}
 .engbtn:hover{border-color:var(--golddim)}
@@ -4609,6 +4609,12 @@ button.tick{animation:doneFlash .45s ease 1}
 .badge.gold{color:var(--gold2);border-color:var(--golddim);background:var(--goldbg)}
 .badge.kept{color:#a8c8a0;border-color:#3d5744}
 .badge.deleted{color:#d8a0a8;border-color:#4f3038}
+/* 状态徽标语义色: 绿=已生成 / 金=生成中 / 蓝=排队 / 灰=未生成 / 红=失败 */
+.badge.ok{color:#7fcf9f;border-color:rgba(46,158,91,.45);background:rgba(46,158,91,.08)}
+.badge.wait{color:var(--gold2);border-color:var(--golddim);background:var(--goldbg)}
+.badge.lineup{color:#8fb2d8;border-color:#46608a;background:rgba(90,126,166,.1)}
+.badge.gray{color:var(--dim);border-color:var(--line);background:#101015}
+.badge.bad{color:#e08a8a;border-color:#5a3636;background:rgba(196,88,88,.08)}
 /* 分段卡片: 每段一张卡, 声音/视频资产条收在同一份子项里 */
 #segList{display:grid;grid-template-columns:repeat(auto-fill,minmax(390px,1fr));gap:10px}
 .segcard{border:1px solid var(--line);border-radius:10px;background:#0d0d12;padding:10px 11px;
@@ -4738,6 +4744,9 @@ button:hover>.glowc,.card:hover>.glowc{animation:glow-vis var(--glow-speed) ease
 .avseg{border:1px solid var(--line);border-radius:8px;padding:10px;background:#0d0d12;display:flex;
   flex-direction:column;gap:7px}
 .avseg.running{border-color:var(--golddim)}
+/* 四态一眼区分: 绿底=已生成 / 金边=生成中 / 蓝虚线=排队 / 红边=失败(未生成=默认灰) */
+.avseg.done{border-color:rgba(46,158,91,.38);background:rgba(46,158,91,.045)}
+.avseg.failed{border-color:rgba(196,88,88,.4)}
 .avseg .id{font-size:11px;color:var(--golddim);font-family:Consolas,monospace}
 .avseg .txt{font-size:12px;line-height:1.55;color:#b8b3a6;min-height:34px}
 .avseg video{width:100%;border-radius:8px;border:1px solid var(--line)}
@@ -5942,12 +5951,21 @@ function renderAvatarPanel(segs){
   ];
   if(!cards.length){grid.innerHTML='<span class="muted">暂无可用音频 — 完成④分段合成，或在上方「自制音频」直接上传</span>';return}
   cards.forEach(s=>{
-    const c=document.createElement('div');c.className='avseg'+(s.video_status==='running'?' running':'')+(s.video_status==='queued'?' queued':'');
+    /* 四态: done(绿) / running(金) / queued(蓝虚线) / failed(红) / 未生成(默认灰) */
+    const vst=s.video_status||'', isDone=!!s.video, isFail=!!s.video_error&&vst!=='running'&&!isDone;
+    const stBadge=isDone?'<span class="badge ok">✓ 已生成</span>'
+      :vst==='running'?'<span class="badge wait"><span class="spin"></span>生成中 · 约300秒</span>'
+      :vst==='queued'?'<span class="badge lineup">⏸ 排队中 · 自动续交</span>'
+      :isFail?'<span class="badge bad">✗ 失败</span>'
+      :'<span class="badge gray">○ 未生成</span>';
+    const c=document.createElement('div');c.className='avseg'
+      +(vst==='running'?' running':'')+(vst==='queued'?' queued':'')
+      +(isDone?' done':'')+(isFail?' failed':'');
     c.dataset.id=s.id;
     c.ondragover=allowDrop;c.ondragleave=unDrop;c.ondrop=e=>dropBind(e,s.id);
     const top=document.createElement('div');top.className='row';top.style.justifyContent='space-between';
     const tag=s._kind==='cus'?('<span class="badge gold">'+(s.text?'文本生成':'自制音频')+'</span>'):'';
-    top.innerHTML=`<span class="id">${s.id}</span>${tag}<span class="muted">${s.video_status==='running'?'<span class="spin"></span>生成中 · 预计 300 秒左右':(s.video_status==='queued'?'⏳ 排队中 · 前序完成后自动提交':(s.video?'✓ 视频':'待生成'))}</span>`;
+    top.innerHTML=`<span class="id">${s.id}</span>${tag}${stBadge}`;
     c.appendChild(top);
     if(s.video_error&&s.video_status!=='running'&&!s.video){   /* 上次失败原因常驻可见 */
       const ev=document.createElement('div');ev.className='vinfo err';
