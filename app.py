@@ -4509,8 +4509,8 @@ button.primary{background:linear-gradient(180deg,#b6a884,#9d8f6e);color:#17140d;
 button.primary:hover{background:var(--gold2)}
 button.confirm-pending{background:rgba(196,88,88,.06);border:1px solid rgba(196,88,88,.22);color:rgba(224,138,138,.62)}
 button.confirm-pending:hover{background:rgba(196,88,88,.12);color:rgba(232,152,152,.9)}
-button.confirm-done{background:linear-gradient(180deg,#b6a884,#9d8f6e);color:#17140d;font-weight:600;border:none}
-button.confirm-done:hover{background:var(--gold2)}
+button.confirm-done{background:rgba(46,158,91,.13);border:1px solid rgba(46,158,91,.38);color:#7fcf9f;font-weight:600}
+button.confirm-done:hover{background:rgba(46,158,91,.22)}
 button.danger{border-color:#4d3a3a;color:#d8a8a8}
 button:disabled{opacity:.4;cursor:not-allowed}
 /* 合成状态显性化(通用): 生成中(琥珀呼吸) / 生成完毕(绿闪) — ④与工作台共用 */
@@ -4571,6 +4571,9 @@ button.done{background:linear-gradient(180deg,#2e9e5b,#1f7a44)!important;color:#
 .engbtn.on .et{color:var(--gold2)}
 /* 逐段完成反馈: 段卡绿脉冲一次 + 按钮短促绿闪 */
 .segcard.flash-ok,.avseg.flash-ok{border-color:#2e9e5b;box-shadow:0 0 16px rgba(46,158,91,.4);transition:box-shadow .3s}
+/* 段卡合成成功的常驻淡绿(区分已合成/待合成; fresh 金光优先, 试听后回落到淡绿) */
+.segcard.tts-done{border-color:rgba(46,158,91,.32);background:rgba(46,158,91,.045)}
+.segcard.tts-done.fresh{border-color:var(--golddim);background:none}
 button.tick{animation:doneFlash .45s ease 1}
 /* 数字人提交状态行: 提交中(金)/已提交(绿)/失败(红) — 独占一行常驻可见 */
 .vinfo{font-size:12px;flex-basis:100%}
@@ -5385,10 +5388,14 @@ $('editorText').addEventListener('input',updCount);
 function closeEditor(){$('editorModal').style.display='none';editorKey=null}
 function saveEditor(){
   if(!editorKey)return;
-  $(editorKey).value=$('editorText').value;
-  refreshSummary(editorKey);
+  const key=editorKey;            /* 先捕获: closeEditor 会把 editorKey 置 null(原版在此处判断恒走 else 分支的隐蔽bug) */
+  $(key).value=$('editorText').value;
+  refreshSummary(key);
   closeEditor();
-  if(editorKey==='m1')confirmM1();else if(editorKey==='m2')confirmM2();else saveProject();
+  /* 两步引导: 编辑确认资料 → 引导外部的「审核确认」/「保存文案」按钮(不再自动替用户确认) */
+  if(key==='m1'){guide1='confirm';updateFlowHint()}
+  else if(key==='m2'){guide2='confirm';updateFlowHint()}
+  else{guide3='save';updateFlowHint()}
 }
 /* ---- ③ 导入自定义口播稿 ---- */
 async function importScript(){
@@ -5416,7 +5423,7 @@ async function runCollect(){
   try{
     const j=await api('/api/skill/collect',{skills,direction:$('direction').value.trim()},true);
     $('m1').value=j.output;refreshSummary('m1');
-    pbarDone('pb1','st1');$('btnM1ok').disabled=false;
+    pbarDone('pb1','st1');$('btnM1ok').disabled=false;guide1='edit';updateFlowHint();
     toast('灵感收集完成（'+skills.join(' + ')+'）');
   }catch(e){pbarFail('pb1','st1',e.message);toast('失败: '+e.message,5000)}
   $('btnCollect').disabled=false;
@@ -5426,7 +5433,7 @@ function setM1ok(v){m1ok=v;const b=$('btnM1ok');
   b.textContent=v?'✓ 资料我已审核，传递给下一个环节使用。':'审核确认中';
   b.classList.toggle('confirm-done',v);b.classList.toggle('confirm-pending',!v);
   updRHint()}
-function confirmM1(){setM1ok(true);autoSave();toast('灵感资料已确认');
+function confirmM1(){setM1ok(true);autoSave();toast('灵感资料已确认');guide1=null;updateFlowHint();
   $('card2').scrollIntoView({behavior:'smooth'});
   if(!$('topic').value.trim()){setTimeout(()=>$('topic').focus(),450)}}
 function updRHint(){
@@ -5448,7 +5455,7 @@ async function runResearch(){
   try{
     const j=await api('/api/skill/research',{topic,material1:m1ok?$('m1').value:'',skills},true);
     $('m2').value=j.output;refreshSummary('m2');
-    pbarDone('pb2','st2');$('btnM2ok').disabled=false;
+    pbarDone('pb2','st2');$('btnM2ok').disabled=false;guide2='edit';updateFlowHint();
     toast('深度调研完成（'+j.backend+' 搜到 '+j.sources_found+' 条）');
   }catch(e){pbarFail('pb2','st2',e.message);toast('失败: '+e.message,5000)}
   $('btnResearch').disabled=false;
@@ -5457,7 +5464,7 @@ async function runResearch(){
 function setM2ok(v){m2ok=v;const b=$('btnM2ok');
   b.textContent=v?'✓ 资料我已审核，传递给下一个环节使用。':'审核确认中';
   b.classList.toggle('confirm-done',v);b.classList.toggle('confirm-pending',!v)}
-function confirmM2(){setM2ok(true);autoSave();toast('调研资料已确认');
+function confirmM2(){setM2ok(true);autoSave();toast('调研资料已确认');guide2=null;updateFlowHint();
   $('card3').scrollIntoView({behavior:'smooth'})}
 /* ---- ③ 统一成稿 ---- */
 async function runUnify(){
@@ -5471,7 +5478,7 @@ async function runUnify(){
   try{
     const j=await api('/api/skill/unify',{topic,material1:m1ok?$('m1').value:'',material2:m2ok?$('m2').value:$('m2').value,skill},true);
     $('script').value=j.script;refreshSummary('script');
-    pbarDone('pb3','st3');$('btnSok').disabled=false;
+    pbarDone('pb3','st3');$('btnSok').disabled=false;guide3='edit';updateFlowHint();
     toast('文案已生成（'+skill+'）');
     autoSave();
   }catch(e){pbarFail('pb3','st3',e.message);toast('失败: '+e.message,5000)}
@@ -5487,7 +5494,7 @@ async function autoSave(){
     refreshProjects();
   }catch(e){toast('自动保存失败: '+e.message,4000)}
 }
-function saveProject(){autoSave();toast('已保存到项目 '+(projName||'(未建)'))}
+function saveProject(){autoSave();toast('已保存到项目 '+(projName||'(未建)'));guide3=null;updateFlowHint()}
 function newProject(){$('npName').value='';$('npModal').style.display='flex';$('npName').focus()}
 function closeNp(){$('npModal').style.display='none'}
 async function createProject(){
@@ -5583,7 +5590,7 @@ async function loadProject(name){
   renderSegs(j.segments||[]);
   loadVoiceRef();
   loadEditItems();
-  toast('已载入 '+name);syncProjGate();
+  toast('已载入 '+name);syncProjGate();catHintIfTtsDone();
 }
 /* ---- ④ 分段合成 ---- */
 /* TTS 引擎左右切换: 左=云端 RH, 右=本地 soar; 两边音色配置各自独立 */
@@ -5655,7 +5662,14 @@ function synthBusy(on){
   CARD4().classList.toggle('stage-running',on);   /* 本地同步合成期间也亮金线+出猫 */
   if(on)setCat(true,'card4');
 }
-function synthDone(){doneBtn(BTN_SPLIT(),CARD4())}
+function synthDone(){doneBtn(BTN_SPLIT(),CARD4());catHintIfTtsDone()}
+/* TTS 全部合成且还没有任何视频 → 黑猫气泡引导去数字人工作台生成视频(拼初稿的硬前提) */
+function catHintIfTtsDone(){
+  if(!projName||!lastSegs.length)return;
+  const allKept=lastSegs.every(s=>s.status==='kept');
+  const anyVideo=lastSegs.some(s=>s.video_status==='running'||s.video_status==='queued'||s.video_status==='kept'||s.video);
+  if(allKept&&!anyVideo)catShowBubble(['音频已全部合成！下一步去「数字人工作台」至少生成一段视频，才能拼出视频初稿哦。']);
+}
 /* 逐段/单段成功反馈: 卡片绿脉冲 1.8s + 主按钮短促绿闪 (④分段卡与工作台avseg卡通用) */
 function flashCard(id){
   const els=document.querySelectorAll('#segList .segcard[data-id="'+id+'"], #avSegs .avseg[data-id="'+id+'"]');
@@ -5694,7 +5708,7 @@ async function splitSynth(resynth){
       });
       await reloadSegs();
       toast('云端合成完成 — 🔊 可试听',4500);
-      synthDone();
+      catHintIfTtsDone();synthDone();
     }else{
       if(!resynth){
         const j=await api('/api/segments/split',{project:projName,script:$('script').value});
@@ -5750,7 +5764,7 @@ function renderSegs(segs){
   (segs||[]).forEach(s=>{
     if(s.status==='kept')kept++;else if(s.status==='deleted')deleted++;else pending++;
     /* ---- 段卡片: 文本 + 声音资产条 + 数字人资产条, 同一份子项收在一张卡 ---- */
-    const c=document.createElement('div');c.className='segcard'+(s.status==='deleted'?' deleted':'');
+    const c=document.createElement('div');c.className='segcard'+(s.status==='deleted'?' deleted':'')+((s.status==='kept'&&s.wav&&s.audio_ok)?' tts-done':'');
     c.dataset.id=s.id;
     c.ondragover=allowDrop;c.ondragleave=unDrop;c.ondrop=e=>dropBind(e,s.id);
     const hasAudio=s.status!=='deleted'&&s.wav&&s.audio_ok;
@@ -6071,17 +6085,30 @@ function setPulse(id,on){
   if(on){e.classList.add('pulse');applyPulseFX(e)}
   else{e.classList.remove('pulse');removePulseFX(e)}
 }
+let guide1=null,guide2=null,guide3=null;   /* 按钮级引导: 'edit'(展开编辑) → 'confirm'/'save'(审核确认/保存文案) → null */
+function pulseBtn(id,on){
+  const b=$(id);if(!b)return;
+  if(on===false){b.classList.remove('pulse-btn');removePulseFX(b);return}
+  b.classList.add('pulse-btn');applyPulseFX(b);
+}
 function updateFlowHint(){
   ['card1','card2','card3','card4','cardProj','cardAV'].forEach(id=>setPulse(id,false));
+  ['btnM1edit','btnM1ok','btnM2edit','btnM2ok','btnSedit','btnSok'].forEach(id=>pulseBtn(id,false));
   $('btnSettings').classList.remove('pulse-btn');removePulseFX($('btnSettings'));
   api('/api/settings').then(j=>{
     if(!j.has_key){$('btnSettings').classList.add('pulse-btn');applyPulseFX($('btnSettings'));return}  // 1. 未配Key → 设置
     if(!projName){setPulse('cardProj',true);return}                             // 2. 未建项目 → 项目
     if(!$('script').value){                                                     // 3. 无文稿 → ①/②/③(有稿即跳过)
       if(!$('m1').value){setPulse('card1',true);return}
+      if(guide1==='edit'){pulseBtn('btnM1edit');return}       /* 收集完成 → 引导展开编辑 */
+      if(guide1==='confirm'){pulseBtn('btnM1ok');return}      /* 编辑保存过 → 引导审核确认 */
       if(!$('m2').value){setPulse('card2',true);return}
+      if(guide2==='edit'){pulseBtn('btnM2edit');return}
+      if(guide2==='confirm'){pulseBtn('btnM2ok');return}
       setPulse('card3',true);return
     }
+    if(guide3==='edit'){pulseBtn('btnSedit');return}         /* 成稿完成 → 引导展开编辑 */
+    if(guide3==='save'){pulseBtn('btnSok');return}           /* 编辑保存过 → 引导保存文案 */
     if(!lastSegs.some(s=>s.status==='kept')){setPulse('card4',true);return}     // 6. 无音频 → ④
     if(editHasDraft!==true){setPulse('card5',true);return}                      // 7. 无初稿 → ⑤（缺视频段用黑底替代）
   }).catch(()=>{});
