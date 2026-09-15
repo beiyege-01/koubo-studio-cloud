@@ -5602,7 +5602,7 @@ async function loadProject(name){
   renderSegs(j.segments||[]);
   loadVoiceRef();
   loadEditItems();
-  toast('已载入 '+name);syncProjGate();catHintIfTtsDone();
+  toast('已载入 '+name);syncProjGate();catHintIfTtsDone();resumeVideoPoll();
 }
 /* ---- ④ 分段合成 ---- */
 /* TTS 引擎左右切换: 左=云端 RH, 右=本地 soar; 两边音色配置各自独立 */
@@ -5763,6 +5763,7 @@ async function reloadSegs(){
   if(!projName)return;
   const j=await api('/api/project/'+encodeURIComponent(projName));
   renderSegs(j.segments||[]);
+  resumeVideoPoll();   /* 数据刷新后检查是否有需要恢复轮询的任务 */
 }
 function renderSegs(segs){
   lastSegs=segs||[];
@@ -6601,6 +6602,15 @@ function pollVideos(){
     }
     if(!runningSegs.length){clearInterval(pvTimer);pvTimer=null}
   },6000);
+}
+function resumeVideoPoll(){   /* 页面刷新/重进项目后恢复轮询: running/queued 的段重新纳入 pollVideos(否则状态卡在"生成中") */
+  if(!projName)return;
+  const need=[...lastSegs,...customItems]
+    .filter(x=>x.video_status==='running'||x.video_status==='queued')
+    .map(x=>x.id);
+  let added=0;
+  need.forEach(id=>{if(!runningSegs.includes(id)){runningSegs.push(id);added++}});
+  if(added){console.log('[resume] 恢复视频轮询:',need.join(','));pollVideos()}
 }
 /* ---- 设置 ---- */
 function openSettings(){
